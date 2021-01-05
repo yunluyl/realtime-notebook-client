@@ -1,10 +1,13 @@
 const RealtimeFile = require("./RealtimeFile");
 
+const websocketAddr = "wss://api.syncpoint.xyz?hub=";
+
 let rtc = {};
 module.exports.rtc = rtc;
 
 let hubName;
 let intervalMs;
+let user;
 let sockets = [null];
 let files = {};
 let intervalID;
@@ -16,6 +19,11 @@ rtc.hub = function (hub) {
 
 rtc.interval = function (interval) {
   intervalMs = interval;
+  return rtc;
+};
+
+rtc.user = function (idToken) {
+  user = idToken;
   return rtc;
 };
 
@@ -44,8 +52,8 @@ rtc.onNotebookChange = function (fileName, base, fileChangeCallback) {
 function onFileChangeBase(fileName, fileListener) {
   if (files.hasOwnProperty(fileName)) return files[fileName];
   if (!sockets[0]) {
-    if (hubName && intervalMs) {
-      sockets[0] = new WebSocket("wss://api.syncpoint.xyz?hub=" + hubName);
+    if (hubName && intervalMs && user) {
+      sockets[0] = new WebSocket(websocketAddr + hubName, user);
       files[fileName] = fileListener;
       sockets[0].onmessage = (event) => {
         let message = JSON.parse(event.data);
@@ -72,7 +80,7 @@ function onFileChangeBase(fileName, fileListener) {
       };
     } else
       throw new Error(
-        "please set hub and interval before trigger onFileChange"
+        "please set hub, interval, and user before trigger onFileChange"
       );
   } else {
     files[fileName] = fileListener;
@@ -142,16 +150,22 @@ class NotebookListener extends FileListenerBase {
   }
 
   insertObject(cell, key, object) {
-    this._file.handleLocalChange([{ p: ["cells", cell, key], oi: object }]);
+    this._file.handleLocalChange([
+      { p: ["cells", cell, key], oi: JSON.parse(JSON.stringify(object)) },
+    ]);
   }
 
   removeObject(cell, key, object) {
-    this._file.handleLocalChange([{ p: ["cells", cell, key], od: object }]);
+    this._file.handleLocalChange([
+      { p: ["cells", cell, key], od: JSON.parse(JSON.stringify(object)) },
+    ]);
   }
 
   replaceObject(cell, key, oldObject, newObject) {
+    const oldObj = JSON.parse(JSON.stringify(oldObject));
+    const newObj = JSON.parse(JSON.stringify(newObject));
     this._file.handleLocalChange([
-      { p: ["cells", cell, key], od: oldObject, oi: newObject },
+      { p: ["cells", cell, key], od: oldObj, oi: newObj },
     ]);
   }
 }
