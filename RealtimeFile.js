@@ -208,7 +208,14 @@ module.exports = class RealtimeFile {
       }
     } else if (message.status === "OP_TOO_OLD")
       this.handleRemoteCommits(message);
-    else {
+    else if (message.status === "FILE_DOESNT_EXIST") {
+      const createFileMessage = {
+        uid: uuidv4(),
+        endPoint: "FILE_CREATE",
+        file: this.fileName,
+      };
+      this.sendMessage(createFileMessage);
+    } else {
       console.error("wrong file update return status: " + message.status);
       console.error(message);
     }
