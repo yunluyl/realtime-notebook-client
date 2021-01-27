@@ -1,6 +1,6 @@
 {
   "name": "realtime-notebook-client",
-  "version": "1.0.8",
+  "version": "1.0.13",
   "description": "",
   "main": "RealtimeClient.js",
   "scripts": {

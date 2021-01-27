@@ -1,98 +1,175 @@
+const { v4: uuidv4 } = require("uuid");
 const RealtimeFile = require("./RealtimeFile");
 
 const websocketAddr = "wss://api.syncpoint.xyz?hub=";
 
-let rtc = {};
-module.exports.rtc = rtc;
+const endpointPassthrough = "PASSTHROUGH";
+const endpointFileUpdate = "FILE_UPDATE";
+const endpointFileCreate = "FILE_CREATE";
+const endpointModifyUser = "MODIFY_USER";
+const endpointListUsers = "LIST_USERS";
+const endpointListFiles = "LIST_FILES";
 
-let hubName;
-let intervalMs;
-let user;
-let sockets = [null];
-let files = {};
-let intervalID;
+const addUser = "ADD";
+const removeUser = "REMOVE";
 
-rtc.hub = function (hub) {
-  hubName = hub;
-  return rtc;
-};
+class HubConnector {
+  constructor() {
+    this.files = {};
+    this.intervalID = 0;
+    this.sockets = [null];
+  }
 
-rtc.interval = function (interval) {
-  intervalMs = interval;
-  return rtc;
-};
+  hub(newHub) {
+    this._hub = newHub;
+    return this;
+  }
 
-rtc.user = function (idToken) {
-  user = idToken;
-  return rtc;
-};
+  interval(newInterval) {
+    this._interval = newInterval;
+    return this;
+  }
 
-rtc.onFileChange = function (fileName, base, fileChangeCallback) {
-  let fileListener = new FileListener(
-    fileName,
-    base,
-    sockets,
-    fileChangeCallback
-  );
-  onFileChangeBase(fileName, fileListener);
-  return fileListener;
-};
+  user(newUser) {
+    this._user = newUser;
+    return this;
+  }
 
-rtc.onNotebookChange = function (fileName, base, fileChangeCallback) {
-  let notebookListener = new NotebookListener(
-    fileName,
-    base,
-    sockets,
-    fileChangeCallback
-  );
-  onFileChangeBase(fileName, notebookListener);
-  return notebookListener;
-};
+  hubMessageReceiver(newReceiver) {
+    this._hubMessageReceiver = newReceiver;
+    return this;
+  }
 
-function onFileChangeBase(fileName, fileListener) {
-  if (files.hasOwnProperty(fileName)) return files[fileName];
-  if (!sockets[0]) {
-    if (hubName && intervalMs && user) {
-      sockets[0] = new WebSocket(websocketAddr + hubName, user);
-      files[fileName] = fileListener;
-      sockets[0].onmessage = (event) => {
+  onFileChange(fileName, base, fileChangeCallback) {
+    let fileListener = new FileListener(
+      fileName,
+      base,
+      this.sockets,
+      fileChangeCallback
+    );
+    this.onFileChangeBase(fileName, fileListener);
+    return fileListener;
+  }
+
+  onNotebookChange(fileName, base, fileChangeCallback) {
+    let notebookListener = new NotebookListener(
+      fileName,
+      base,
+      this.sockets,
+      fileChangeCallback
+    );
+    this.onFileChangeBase(fileName, notebookListener);
+    return notebookListener;
+  }
+
+  onFileChangeBase(fileName, fileListener) {
+    if (this.files.hasOwnProperty(fileName)) return this.files[fileName];
+    if (!this.sockets[0]) {
+      this.files[fileName] = fileListener;
+      this.connectSocket();
+    } else {
+      this.files[fileName] = fileListener;
+      if (this.sockets[0].readyState === this.sockets[0].OPEN)
+        fileListener._file.fetchRemoteCommits();
+    }
+  }
+
+  connectSocket(newReceiver) {
+    if (this._hub && this._interval && this._user) {
+      this.sockets[0] = new WebSocket(websocketAddr + this._hub, this._user);
+      this.sockets[0].onmessage = (event) => {
         let message = JSON.parse(event.data);
-        if (message.endpoint === "FILE_UPDATE") {
-          if (files.hasOwnProperty(message.file))
-            files[message.file]._file.receiveMessage(message);
+        if (message.endpoint === endpointFileUpdate) {
+          if (this.files.hasOwnProperty(message.file))
+            this.files[message.file]._file.receiveMessage(message);
+        } else if (message.endpoint === endpointListUsers && newReceiver) {
+          console.log("received hub update message");
+          newReceiver({
+            messageType: endpointListUsers,
+            users: message.userList,
+          });
         }
       };
-      sockets[0].onopen = (event) => {
+      this.sockets[0].onopen = (event) => {
         console.log("websocket connected!");
-        for (let [_, listener] of Object.entries(files)) {
+        for (let [_, listener] of Object.entries(this.files)) {
           listener._file.fetchRemoteCommits();
         }
-        intervalID = setInterval(() => {
+        this.intervalID = setInterval(() => {
           console.log("---interval triggered---");
-          for (let [_, listener] of Object.entries(files)) {
+          for (let [_, listener] of Object.entries(this.files)) {
             listener._file.changeResolver();
           }
-        }, intervalMs);
+        }, this._interval);
       };
-      sockets[0].onclose = (event) => {
+      this.sockets[0].onclose = (event) => {
         console.log("websocket closed");
-        clearInterval(intervalID);
+        clearInterval(this.intervalID);
       };
     } else
       throw new Error(
         "please set hub, interval, and user before trigger onFileChange"
       );
-  } else {
-    files[fileName] = fileListener;
-    if (this.sockets[0].readyState === this.sockets[0].OPEN)
-      fileListener._file.fetchRemoteCommits();
+  }
+
+  requestFileList() {
+    const message = {
+      uid: uuidv4(),
+      endPoint: endpointListFiles,
+    };
+    this.sendMessage(message);
+  }
+
+  requestAddUser(identifier) {
+    const message = {
+      uid: uuidv4(),
+      endPoint: endpointModifyUser,
+      modifyUserType: addUser,
+      modifyUserID: identifier,
+    };
+    this.sendMessage(message);
+  }
+
+  requestRemoveUser(identifier) {
+    const message = {
+      uid: uuidv4(),
+      endPoint: endpointModifyUser,
+      modifyUserType: removeUser,
+      modifyUserID: identifier,
+    };
+    this.sendMessage(message);
+  }
+
+  requestModifyUserRole(identifier, newRole) {
+    const message = {
+      uid: uuidv4(),
+      endPoint: endpointModifyUser,
+      modifyUserType: modifyUser,
+      modifyUserID: identifier,
+      modifyUserRole: newRole,
+    };
+    this.sendMessage(message);
+  }
+
+  sendMessage(message) {
+    if (this.sockets[0].readyState !== this.sockets[0].OPEN) {
+      console.error("try to send message when socket is not open");
+      return;
+    }
+
+    this.sockets[0].send(JSON.stringify(message));
+    console.log("---sent hub message---");
+  }
+
+  close() {
+    if (this.sockets[0]) this.sockets[0].close();
+    this._hubMessageReceiver = null;
+    this.sockets[0] = null;
   }
 }
 
-rtc.close = function () {
-  if (sockets[0]) sockets[0].close();
-  sockets[0] = null;
-};
+let rtc = new HubConnector();
+module.exports.rtc = rtc;
 
 class FileListenerBase {
   constructor(fileName, base, sockets, fileChangeCallback) {
