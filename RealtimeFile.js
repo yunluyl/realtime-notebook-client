@@ -14,6 +14,7 @@ module.exports = class RealtimeFile {
     this.localOpBuffer = null;
     this.remoteOpBuffer = null;
     this.remoteIndexBuffer = -1;
+    this.closed = false;
   }
 
   fetchRemoteCommits() {
@@ -239,5 +240,9 @@ module.exports = class RealtimeFile {
         this.localOpBuffer = jot.compose(this.localOpBuffer, localOp);
       else this.localOpBuffer = localOp;
     }
+  }
+
+  close() {
+    this.closed = true;
   }
 };
