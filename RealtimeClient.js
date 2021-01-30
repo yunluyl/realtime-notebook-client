@@ -6,6 +6,8 @@ const websocketAddr = "wss://api.syncpoint.xyz?hub=";
 const endpointPassthrough = "PASSTHROUGH";
 const endpointFileUpdate = "FILE_UPDATE";
 const endpointFileCreate = "FILE_CREATE";
+const endpointFileRename = "FILE_RENAME";
+const endpointFileDelete = "FILE_DELETE";
 const endpointModifyUser = "MODIFY_USER";
 const endpointListUsers = "LIST_USERS";
 const endpointListFiles = "LIST_FILES";
@@ -40,6 +42,15 @@ class HubConnector {
     return this;
   }
 
+  hasFile(fileName) {
+    if (!this.files.hasOwnProperty(fileName)) return false;
+    if (this.files[fileName].closed) {
+      delete this.files[fileName];
+      return false;
+    }
+    return true;
+  }
+
   onFileChange(fileName, base, fileChangeCallback) {
     let fileListener = new FileListener(
       fileName,
@@ -63,7 +74,7 @@ class HubConnector {
   }
 
   onFileChangeBase(fileName, fileListener) {
-    if (this.files.hasOwnProperty(fileName)) return this.files[fileName];
+    if (this.hasFile(fileName)) return this.files[fileName];
     if (!this.sockets[0]) {
       this.files[fileName] = fileListener;
       this.connectSocket();
@@ -80,24 +91,54 @@ class HubConnector {
       this.sockets[0].onmessage = (event) => {
         let message = JSON.parse(event.data);
         if (message.endpoint === endpointFileUpdate) {
-          if (this.files.hasOwnProperty(message.file))
+          if (this.hasFile(message.file))
             this.files[message.file]._file.receiveMessage(message);
-        } else if (message.endpoint === endpointListUsers && newReceiver) {
-          console.log("received hub update message");
+          return;
+        }
+        if (!newReceiver) {
+          console.log(
+            "received hub update message but no handler to process it"
+          );
+          return;
+        }
+        console.log("received hub update message");
+        if (message.endpoint === endpointListUsers) {
           newReceiver({
             messageType: endpointListUsers,
             users: message.userList,
+          });
+        } else if (message.endpoint === endpointListFiles) {
+          newReceiver({
+            messageType: endpointListFiles,
+            files: message.fileList,
+          });
+        } else if (message.endpoint === endpointFileCreate) {
+          newReceiver({
+            messageType: endpointFileCreate,
+            file: { name: message.file },
+          });
+        } else if (message.endpoint === endpointFileRename) {
+          newReceiver({
+            messageType: endpointFileRename,
+            file: { name: message.file },
+          });
+        } else if (message.endpoint === endpointFileDelete) {
+          newReceiver({
+            messageType: endpointFileDelete,
+            status: message.status,
           });
         }
       };
       this.sockets[0].onopen = (event) => {
         console.log("websocket connected!");
         for (let [_, listener] of Object.entries(this.files)) {
+          if (listener.closed) continue;
           listener._file.fetchRemoteCommits();
         }
         this.intervalID = setInterval(() => {
           console.log("---interval triggered---");
           for (let [_, listener] of Object.entries(this.files)) {
+            if (listener.closed) continue;
             listener._file.changeResolver();
           }
         }, this._interval);
@@ -116,6 +157,34 @@ class HubConnector {
     const message = {
       uid: uuidv4(),
       endPoint: endpointListFiles,
+    };
+    this.sendMessage(message);
+  }
+
+  requestNewUntitledFile(fileName) {
+    const message = {
+      uid: uuidv4(),
+      file: fileName,
+      endPoint: endpointFileCreate,
+    };
+    this.sendMessage(message);
+  }
+
+  requestFileRename(oldFileName, newFileName) {
+    const message = {
+      uid: uuidv4(),
+      file: oldFileName,
+      newFileName: newFileName,
+      endPoint: endpointFileRename,
+    };
+    this.sendMessage(message);
+  }
+
+  requestFileDelete(fileName) {
+    const message = {
+      uid: uuidv4(),
+      file: fileName,
+      endPoint: endpointFileDelete,
     };
     this.sendMessage(message);
   }
@@ -177,7 +246,7 @@ class FileListenerBase {
   }
 
   unsubscribe() {
-    delete files[this._file.fileName];
+    this._file.close();
   }
 }
 
