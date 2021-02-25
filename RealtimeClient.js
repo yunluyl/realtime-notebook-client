@@ -1,7 +1,7 @@
 const { v4: uuidv4 } = require("uuid");
 const RealtimeFile = require("./RealtimeFile");
 
-const websocketAddr = "wss://api.syncpoint.xyz?hub=";
+const websocketAddr = "wss://api.syncpoint.xyz";
 
 const endpointPassthrough = "PASSTHROUGH";
 const endpointFileUpdate = "FILE_UPDATE";
@@ -11,6 +11,11 @@ const endpointFileDelete = "FILE_DELETE";
 const endpointModifyUser = "MODIFY_USER";
 const endpointListUsers = "LIST_USERS";
 const endpointListFiles = "LIST_FILES";
+const endpointListHub = "LIST_HUB";
+const endpointConnectToHub = "CONNECT_HUB";
+const endpointDisconnectFromHub = "DISCONNECT_HUB";
+const endpointHubCreate = "HUB_CREATE";
+const endpointFileRetrieve = "FILE_RETRIEVE";
 
 const addUser = "ADD";
 const removeUser = "REMOVE";
@@ -20,11 +25,6 @@ class HubConnector {
     this.files = {};
     this.intervalID = 0;
     this.sockets = [null];
-  }
-
-  hub(newHub) {
-    this._hub = newHub;
-    return this;
   }
 
   interval(newInterval) {
@@ -44,7 +44,7 @@ class HubConnector {
 
   hasFile(fileName) {
     if (!this.files.hasOwnProperty(fileName)) return false;
-    if (this.files[fileName].closed) {
+    if (this.files[fileName]._file.closed) {
       delete this.files[fileName];
       return false;
     }
@@ -52,25 +52,27 @@ class HubConnector {
   }
 
   onFileChange(fileName, base, fileChangeCallback) {
+    // We don't connect to sockets within a file; explicitly connect to the backend first.
+    if (!this.sockets[0]) return null;
     let fileListener = new FileListener(
       fileName,
       base,
       this.sockets,
       fileChangeCallback
     );
-    this.onFileChangeBase(fileName, fileListener);
-    return fileListener;
+    return this.onFileChangeBase(fileName, fileListener);
   }
 
   onNotebookChange(fileName, base, fileChangeCallback) {
+    // We don't connect to sockets within a file; explicitly connect to the backend first.
+    if (!this.sockets[0]) return null;
     let notebookListener = new NotebookListener(
       fileName,
       base,
       this.sockets,
       fileChangeCallback
     );
-    this.onFileChangeBase(fileName, notebookListener);
-    return notebookListener;
+    return this.onFileChangeBase(fileName, notebookListener);
   }
 
   onFileChangeBase(fileName, fileListener) {
@@ -83,16 +85,23 @@ class HubConnector {
       if (this.sockets[0].readyState === this.sockets[0].OPEN)
         fileListener._file.fetchRemoteCommits();
     }
+    return fileListener;
   }
 
   connectSocket(newReceiver) {
-    if (this._hub && this._interval && this._user) {
-      this.sockets[0] = new WebSocket(websocketAddr + this._hub, this._user);
+    if (this._interval && this._user) {
+      this.sockets[0] = new WebSocket(websocketAddr, this._user);
       this.sockets[0].onmessage = (event) => {
         let message = JSON.parse(event.data);
         if (message.endpoint === endpointFileUpdate) {
           if (this.hasFile(message.file))
             this.files[message.file]._file.receiveMessage(message);
+          return;
+        }
+        if (message.endpoint === endpointFileRetrieve) {
+          if (this.hasFile(message.file)) {
+            this.files[message.file]._file.handleInitialFile(message);
+          }
           return;
         }
         if (!newReceiver) {
@@ -101,25 +110,28 @@ class HubConnector {
           );
           return;
         }
-        console.log("received hub update message");
         if (message.endpoint === endpointListUsers) {
           newReceiver({
             messageType: endpointListUsers,
+            status: message.status,
             users: message.userList,
           });
         } else if (message.endpoint === endpointListFiles) {
           newReceiver({
             messageType: endpointListFiles,
+            status: message.status,
             files: message.fileList,
           });
         } else if (message.endpoint === endpointFileCreate) {
           newReceiver({
             messageType: endpointFileCreate,
+            status: message.status,
             file: { name: message.file },
           });
         } else if (message.endpoint === endpointFileRename) {
           newReceiver({
             messageType: endpointFileRename,
+            status: message.status,
             file: { name: message.file },
           });
         } else if (message.endpoint === endpointFileDelete) {
@@ -127,18 +139,34 @@ class HubConnector {
             messageType: endpointFileDelete,
             status: message.status,
           });
+        } else if (message.endpoint === endpointListHub) {
+          newReceiver({
+            messageType: endpointListHub,
+            status: message.status,
+            hubList: message.hubList,
+          });
+        } else if (message.endpoint === endpointConnectToHub) {
+          newReceiver({
+            messageType: endpointConnectToHub,
+            status: message.status,
+            hubName: message.hubName,
+          });
+        } else {
+          console.log(
+            "Received hub update with unhandled endpoint: " + message.endpoint
+          );
         }
       };
       this.sockets[0].onopen = (event) => {
         console.log("websocket connected!");
-        for (let [_, listener] of Object.entries(this.files)) {
-          if (listener.closed) continue;
+        for (let [fileName, listener] of Object.entries(this.files)) {
+          if (!this.hasFile(fileName)) continue;
           listener._file.fetchRemoteCommits();
         }
         this.intervalID = setInterval(() => {
           console.log("---interval triggered---");
-          for (let [_, listener] of Object.entries(this.files)) {
-            if (listener.closed) continue;
+          for (let [fileName, listener] of Object.entries(this.files)) {
+            if (!this.hasFile(fileName)) continue;
             listener._file.changeResolver();
           }
         }, this._interval);
@@ -149,8 +177,41 @@ class HubConnector {
       };
     } else
       throw new Error(
-        "please set hub, interval, and user before trigger onFileChange"
+        "please set interval, and user before trigger onFileChange"
       );
+  }
+
+  createHub() {
+    const message = {
+      uid: uuidv4(),
+      endPoint: endpointHubCreate,
+    };
+    this.sendMessage(message);
+  }
+
+  connectToHub(hub) {
+    const message = {
+      uid: uuidv4(),
+      endPoint: endpointConnectToHub,
+      hubName: hub,
+    };
+    this.sendMessage(message);
+  }
+
+  disconnectFromHub() {
+    const message = {
+      uid: uuidv4(),
+      endPoint: endpointDisconnectFromHub,
+    };
+    this.sendMessage(message);
+  }
+
+  requestHubList() {
+    const message = {
+      uid: uuidv4(),
+      endPoint: endpointListHub,
+    };
+    this.sendMessage(message);
   }
 
   requestFileList() {
@@ -158,7 +219,7 @@ class HubConnector {
       uid: uuidv4(),
       endPoint: endpointListFiles,
     };
-    this.sendMessage(message);
+    return this.sendMessage(message);
   }
 
   requestNewUntitledFile(fileName) {
@@ -221,13 +282,17 @@ class HubConnector {
   }
 
   sendMessage(message) {
-    if (this.sockets[0].readyState !== this.sockets[0].OPEN) {
+    if (
+      !this.sockets[0] ||
+      this.sockets[0].readyState !== this.sockets[0].OPEN
+    ) {
       console.error("try to send message when socket is not open");
-      return;
+      return false;
     }
 
     this.sockets[0].send(JSON.stringify(message));
     console.log("---sent hub message---");
+    return true;
   }
 
   close() {
