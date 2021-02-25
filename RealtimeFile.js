@@ -20,10 +20,9 @@ module.exports = class RealtimeFile {
   fetchRemoteCommits() {
     this.sendMessage({
       uid: uuidv4(),
-      endpoint: "FILE_UPDATE",
+      endpoint: "FILE_RETRIEVE",
       file: this.fileName,
-      index: this.committedOpIndex,
-      operations: [],
+      fileState: JSON.stringify(this.committedFile), // used as a base if the file has no other operations.
     });
   }
 
@@ -130,28 +129,68 @@ module.exports = class RealtimeFile {
         this.remoteOpBuffer = jot.compose(this.remoteOpBuffer, remoteOp);
       else this.remoteOpBuffer = remoteOp;
     }
-    this.remoteIndexBuffer +=
-      message.operations.length - this.remoteIndexBuffer + message.index - 1;
+    this.remoteIndexBuffer = message.operations.length + message.index - 1;
   }
 
   handleSelfCommits(message) {
     console.log("received self op - length: " + message.operations.length);
     this.outstandingOpSuccess = true;
-    this.remoteIndexBuffer +=
-      message.operations.length - this.remoteIndexBuffer + message.index - 1;
+    this.remoteIndexBuffer = message.operations.length + message.index - 1;
+  }
+
+  handleInitialFile(message) {
+    // I feel that we shouldn't be discarding messages that don't match and instead stick them in a queue
+    // until they're ready to be handled.
+    const msg = this.checkAgainstOutstandingMessage(message);
+    if (!msg) {
+      console.error(
+        `Received message out of order (message uid doesn't match): ${message}`
+      );
+      return;
+    }
+
+    let base;
+    if (msg.fileState) {
+      base = JSON.parse(msg.fileState);
+    } else {
+      // When the notebook file was created, whatever the default notebook is will be set to this.committedFile.
+      // In the case of Jupyterlab, this will be a notebook with a single blank code cell.
+      base = this.committedFile;
+    }
+    base = jot.create(base);
+
+    const mergedOps = this.mergeOperations(msg.operations);
+    // Overrides any existing committedFile
+    if (mergedOps) {
+      this.committedFile = jot.apply(base, mergedOps);
+    } else {
+      this.committedFile = base;
+    }
+
+    this.remoteIndexBuffer = msg.operations.length + msg.index;
+    this.committedOpIndex = this.remoteIndexBuffer;
+
+    this.fileChangeCallback(this.committedFile);
+  }
+
+  mergeOperations(operations) {
+    let op = null;
+    for (let i = 0; i < operations.length; i++) {
+      if (op) op = jot.compose(op, JSON.parse(operations[i]));
+      else op = JSON.parse(operations[i]);
+    }
+
+    return op;
   }
 
   mergeRemoteOperations(remoteIndex, operations) {
-    let op = null;
+    let start;
     if (operations) {
-      let start = this.remoteIndexBuffer - remoteIndex + 1;
+      start = this.remoteIndexBuffer - remoteIndex + 1;
       if (start < 0) return null;
-      for (let i = start; i < operations.length; i++) {
-        if (op) op = jot.compose(op, JSON.parse(operations[i]));
-        else op = JSON.parse(operations[i]);
-      }
+      return this.mergeOperations(operations.slice(start));
     }
-    return op;
+    return null;
   }
 
   sendMessage(message) {
@@ -168,7 +207,7 @@ module.exports = class RealtimeFile {
     console.log("---sent message---");
   }
 
-  receiveMessage(message) {
+  checkAgainstOutstandingMessage(message) {
     console.log("---received message---");
     if (message.file !== this.fileName) {
       console.error(
@@ -177,13 +216,19 @@ module.exports = class RealtimeFile {
           " does not match the file: " +
           this.fileName
       );
-      return;
+      return null;
     }
     if (message.uid === this.outstandingMessageUid) {
       console.log("outstanding message cleared");
       this.outstandingMessageUid = "";
       message.resp = true;
     }
+    return message;
+  }
+
+  receiveMessage(message) {
+    message = this.checkAgainstOutstandingMessage(message);
+    if (!message) return;
     console.log(message.status);
     console.log("message index: " + message.index);
     if (message.index - this.remoteIndexBuffer > 1) {
