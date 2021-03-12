@@ -88,7 +88,7 @@ class HubConnector {
     return fileListener;
   }
 
-  connectSocket(newReceiver) {
+  connectSocket() {
     if (this._interval && this._user) {
       this.sockets[0] = new WebSocket(websocketAddr, this._user);
       this.sockets[0].onmessage = (event) => {
@@ -96,59 +96,56 @@ class HubConnector {
         if (message.endpoint === endpointFileUpdate) {
           if (this.hasFile(message.file))
             this.files[message.file]._file.receiveMessage(message);
-          return;
-        }
-        if (message.endpoint === endpointFileRetrieve) {
+        } else if (message.endpoint === endpointFileRetrieve) {
           if (this.hasFile(message.file)) {
             this.files[message.file]._file.handleInitialFile(message);
           }
-          return;
-        }
-        if (!newReceiver) {
-          console.log(
-            "received hub update message but no handler to process it"
-          );
-          return;
-        }
-        if (message.endpoint === endpointListUsers) {
-          newReceiver({
+        } else if (message.endpoint === endpointListUsers) {
+          this.sendToReceiver({
             messageType: endpointListUsers,
             status: message.status,
+            text: message.text,
             users: message.userList,
           });
         } else if (message.endpoint === endpointListFiles) {
-          newReceiver({
+          this.sendToReceiver({
             messageType: endpointListFiles,
             status: message.status,
+            text: message.text,
             files: message.fileList,
           });
         } else if (message.endpoint === endpointFileCreate) {
-          newReceiver({
+          this.sendToReceiver({
             messageType: endpointFileCreate,
             status: message.status,
+            text: message.text,
             file: { name: message.file },
           });
         } else if (message.endpoint === endpointFileRename) {
-          newReceiver({
+          this.sendToReceiver({
             messageType: endpointFileRename,
             status: message.status,
+            text: message.text,
             file: { name: message.file },
           });
         } else if (message.endpoint === endpointFileDelete) {
-          newReceiver({
+          this.sendToReceiver({
             messageType: endpointFileDelete,
             status: message.status,
+            text: message.text,
           });
         } else if (message.endpoint === endpointListHub) {
-          newReceiver({
+          this.sendToReceiver({
             messageType: endpointListHub,
             status: message.status,
+            text: message.text,
             hubList: message.hubList,
           });
         } else if (message.endpoint === endpointConnectToHub) {
-          newReceiver({
+          this.sendToReceiver({
             messageType: endpointConnectToHub,
             status: message.status,
+            text: message.text,
             hubName: message.hubName,
           });
         } else {
@@ -179,6 +176,14 @@ class HubConnector {
       throw new Error(
         "please set interval, and user before trigger onFileChange"
       );
+  }
+
+  sendToReceiver(message) {
+    if (!this._hubMessageReceiver) {
+      console.log("received message to send but no handler to process it");
+    } else {
+      this._hubMessageReceiver(message);
+    }
   }
 
   createHub() {
